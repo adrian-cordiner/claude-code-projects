@@ -32,6 +32,7 @@
   var xTexture, oTexture;
   var anim = null;            // active layer animation, or null
   var hovered = null;         // sticker currently highlighted
+  var turnPreview = { group: null, stickers: [] }; // button-hover layer/arrow preview
 
   // DOM
   var turnEl, turnPlayerEl, turnPhaseEl, movesButtons, resultEl, resultText;
@@ -202,6 +203,7 @@
   function doMove(name) {
     var def = MOVES[name];
     if (!def) return;
+    clearTurnPreview(); // remove the hover glow/arrows before animating
 
     var axisVec = new THREE.Vector3(
       def.axis === 'x' ? 1 : 0,
@@ -279,6 +281,93 @@
     var e = m.elements;
     for (var i = 0; i < 16; i++) e[i] = Math.round(e[i]);
     obj.quaternion.setFromRotationMatrix(m);
+  }
+
+  // ======================================================================
+  // Move preview (hover a button -> glow that layer + show direction arrows)
+  // ======================================================================
+  var PREVIEW_COLOR = 0xffb020;       // amber ring / arrows
+  var PREVIEW_EMISSIVE = 0x7a4a00;    // added glow on the layer's stickers
+  var PREVIEW_TINT = 0xffcf87;        // sticker base colour while previewing
+
+  function showTurnPreview(name) {
+    clearTurnPreview();
+    var def = MOVES[name];
+    if (!def) return;
+
+    // Glow every sticker on the cubies that make up the rotating layer.
+    for (var i = 0; i < stickers.length; i++) {
+      var s = stickers[i];
+      if (Math.round(s.parent.position[def.axis] / SPACING) === def.value) {
+        turnPreview.stickers.push({
+          s: s, emissive: s.material.emissive.getHex(), color: s.material.color.getHex()
+        });
+        s.material.emissive.setHex(PREVIEW_EMISSIVE);
+        s.material.color.setHex(PREVIEW_TINT);
+      }
+    }
+
+    turnPreview.group = buildTurnIndicator(def);
+    cubeRoot.add(turnPreview.group);
+  }
+
+  function clearTurnPreview() {
+    for (var i = 0; i < turnPreview.stickers.length; i++) {
+      var t = turnPreview.stickers[i];
+      t.s.material.emissive.setHex(t.emissive);
+      t.s.material.color.setHex(t.color);
+    }
+    turnPreview.stickers = [];
+    if (turnPreview.group) {
+      cubeRoot.remove(turnPreview.group);
+      disposeObject(turnPreview.group);
+      turnPreview.group = null;
+    }
+  }
+
+  // A ring around the layer's rotation axis with two tangent arrowheads
+  // pointing in the direction the layer will turn.
+  function buildTurnIndicator(def) {
+    var g = new THREE.Group();
+    var R = 2.2, tube = 0.05;
+    var axisVec = new THREE.Vector3(
+      def.axis === 'x' ? 1 : 0, def.axis === 'y' ? 1 : 0, def.axis === 'z' ? 1 : 0
+    );
+
+    var ringMat = new THREE.MeshBasicMaterial({ color: PREVIEW_COLOR, transparent: true, opacity: 0.9 });
+    var ring = new THREE.Mesh(new THREE.TorusGeometry(R, tube, 12, 64), ringMat);
+    // Default torus axis is +Z; rotate it onto the layer's axis.
+    var q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), axisVec);
+    ring.quaternion.copy(q);
+    g.add(ring);
+
+    // In-plane basis vectors (u, v) with u x v = axisVec, so +dir is the
+    // right-hand rotation direction about the axis.
+    var u = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+    var v = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+    addArrowHead(g, u.clone().multiplyScalar(R), v.clone().multiplyScalar(def.dir));
+    addArrowHead(g, u.clone().multiplyScalar(-R), v.clone().multiplyScalar(-def.dir));
+
+    // Float the ring just outside the layer's outer face (not through it).
+    g.position.copy(axisVec.clone().multiplyScalar(def.value * 1.7));
+    return g;
+  }
+
+  function addArrowHead(g, pos, dir) {
+    var cone = new THREE.Mesh(
+      new THREE.ConeGeometry(0.22, 0.55, 18),
+      new THREE.MeshBasicMaterial({ color: PREVIEW_COLOR })
+    );
+    cone.position.copy(pos);
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    g.add(cone);
+  }
+
+  function disposeObject(obj) {
+    obj.traverse(function (o) {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
   }
 
   // ======================================================================
@@ -410,6 +499,12 @@
         if (state !== STATE.MOVE) return;
         doMove(btn.getAttribute('data-move'));
       });
+      // Disabled buttons don't emit pointer events, so previews only show
+      // when it's actually this player's move phase.
+      btn.addEventListener('mouseenter', function () {
+        if (state === STATE.MOVE) showTurnPreview(btn.getAttribute('data-move'));
+      });
+      btn.addEventListener('mouseleave', clearTurnPreview);
     });
     document.getElementById('reset').addEventListener('click', resetGame);
     document.getElementById('result-reset').addEventListener('click', resetGame);
@@ -442,6 +537,7 @@
   function resetGame() {
     // Tear down the current cube and rebuild a solved one.
     clearHover();
+    clearTurnPreview();
     if (anim) { cubeRoot.remove(anim.pivot); anim = null; }
     while (cubeRoot.children.length) cubeRoot.remove(cubeRoot.children[0]);
     cubies = [];
